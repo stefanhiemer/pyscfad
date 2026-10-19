@@ -251,7 +251,7 @@ def scf(
     scf_conv = False
     mo_energy = mo_coeff = mo_occ = None
 
-    dm, vhf, fock, e_tot = _scf_implicit(
+    dm, _, _, e_tot = _scf_implicit(
         mf,
         dm,
         h1e,
@@ -261,6 +261,21 @@ def scf(
         conv_tol,
         conv_tol_dm,
     )
+    # vhf/fock from _scf_implicit are custom_root's AUX outputs -- JAX
+    # gives aux an explicit *zero* tangent by design (see
+    # jax._src.lax.control_flow.solves._root_jvp: "solution_dot +=
+    # _map(ad_util.zeros_like_jaxval, aux)"). Reusing them directly here
+    # silently drops the implicit/Pulay-type gradient response and
+    # returns a WRONG gradient while leaving the forward energy correct
+    # (confirmed by direct comparison against finite differences, and
+    # against pyscfad.scf.hf_lite.kernel's own tail, which already avoids
+    # this by recomputing vhf/fock here the same way). Recompute them
+    # fresh from the properly-differentiated primal `dm` instead. `e_tot`
+    # from `_scf_implicit` is still fine to keep using below -- it only
+    # feeds `abs(e_tot-last_hf_e)` for the boolean convergence flag, which
+    # doesn't need a gradient.
+    vhf = mf.get_veff(mol, dm, s1e=s1e)
+    fock = mf.get_fock(h1e, s1e, vhf, dm)
 
     mo_energy, mo_coeff = mf.eig(fock, s1e)
     mo_occ = mf.get_occ(mo_energy, mo_coeff)
